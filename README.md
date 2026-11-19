@@ -1,5 +1,7 @@
 # Reservoir simulation grid
 
+![Reservoir Simulation Visualization](./demo_visualisation.gif)
+
 Three.js viewer for a synthetic reservoir simulation grid (50 x 50 x 16 cells, waterflood 2026-2038). No build step: Three.js 0.170 loads from CDN via an import map.
 
 ## Open
