@@ -2,15 +2,8 @@
 
 Three.js viewer for a synthetic reservoir simulation grid (50 x 50 x 16 cells, waterflood 2026-2038). No build step: Three.js 0.170 loads from CDN via an import map.
 
-## Run
-
-ES modules need an HTTP server (not `file://`):
-
-```bash
-python3 -m http.server 8000 --bind 127.0.0.1
-```
-
-Open http://localhost:8000
+## Open
+ https://stadniuk-roman.github.io/reservoir_simulation_grid/
 
 ## What each part shows
 
