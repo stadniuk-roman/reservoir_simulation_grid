@@ -1,0 +1,1074 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Reservoir simulation grid</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0d1117; color: #c9d1d9; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+    #viewport { position: fixed; inset: 0; }
+    .panel { position: fixed; background: rgba(13, 17, 23, 0.92); border: 1px solid #30363d; border-radius: 8px; padding: 12px 14px; box-sizing: border-box; }
+    #controls { top: 12px; left: 12px; width: 280px; max-height: calc(100% - 24px); overflow: auto; }
+    #info { top: 12px; right: 12px; width: 250px; }
+    #stats { bottom: 12px; right: 12px; font: 11px/1.5 ui-monospace, monospace; white-space: pre; color: #8b949e; }
+    h1 { font-size: 15px; margin: 0 0 4px; }
+    h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #8b949e; margin: 14px 0 6px; }
+    .hint { color: #8b949e; font-size: 12px; margin: 0; }
+    select { width: 100%; background: #161b22; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 4px; font: inherit; }
+    .slider { margin: 6px 0; }
+    .slider .top { display: flex; justify-content: space-between; }
+    .slider input { width: 100%; margin: 2px 0 0; }
+    .value { color: #58a6ff; font-variant-numeric: tabular-nums; }
+    label.toggle { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+    .buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+    button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 4px 8px; cursor: pointer; font: inherit; }
+    button:hover { border-color: #58a6ff; }
+    #colorbar { margin-top: 8px; }
+    #colorbar canvas { width: 100%; height: 12px; display: block; border-radius: 2px; }
+    #colorbar .labels { display: flex; justify-content: space-between; color: #8b949e; font-size: 11px; }
+    #info table { width: 100%; border-collapse: collapse; }
+    #info td { padding: 1px 0; }
+    #info td:last-child { text-align: right; color: #58a6ff; font-variant-numeric: tabular-nums; }
+    .legend span { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 8px; vertical-align: -1px; }
+    .legend span:first-child { margin-left: 0; }
+    #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: #8b949e; font-size: 15px; }
+    .well-label { color: #fff; font: 11px system-ui, sans-serif; background: rgba(0, 0, 0, 0.6); padding: 1px 5px; border-radius: 3px; white-space: nowrap; transform: translateY(-12px); }
+    .well-label.producer { border-left: 3px solid #3fb950; }
+    .well-label.injector { border-left: 3px solid #58a6ff; }
+    .well-label.proposed { border-left: 3px solid #e3b341; }
+    @media (max-height: 560px) { #stats { display: none; } }
+    @media (max-width: 760px) {
+      #controls { width: calc(100% - 24px); max-height: 48%; }
+      #info { top: auto; bottom: 12px; left: 12px; right: auto; width: calc(100% - 24px); }
+      #stats { display: none; }
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="viewport"></div>
+  <div id="loading">Building 40 000-cell grid in a Web Worker...</div>
+
+  <div id="controls" class="panel">
+    <h1>Reservoir simulation grid</h1>
+    <p class="hint">50 x 50 x 16 cells, waterflood 2026-2038. Drag to orbit, click a cell to inspect it.</p>
+
+    <h2>Presets</h2>
+    <div class="buttons">
+      <button data-preset="initial">Initial oil 2026</button>
+      <button data-preset="remaining">Remaining oil 2038</button>
+      <button data-preset="pressure">Pressure cutaway</button>
+    </div>
+
+    <h2>Property</h2>
+    <select id="property">
+      <option value="oilSaturation">Oil saturation (So)</option>
+      <option value="pressure">Pressure, bar</option>
+      <option value="porosity">Porosity</option>
+      <option value="logPermeability">Permeability, mD (log scale)</option>
+    </select>
+    <div id="colorbar">
+      <canvas width="256" height="1"></canvas>
+      <div class="labels"><span id="colorbar-min"></span><span id="colorbar-mid"></span><span id="colorbar-max"></span></div>
+    </div>
+
+    <h2>Time</h2>
+    <div class="slider">
+      <div class="top"><span>Year</span><span class="value" id="time-value"></span></div>
+      <input id="time" type="range" min="0" max="12" step="0.01" value="0" />
+    </div>
+    <button id="play">Play waterflood</button>
+
+    <h2>Value filter</h2>
+    <div class="slider">
+      <div class="top"><span>Show from</span><span class="value" id="filter-low-value"></span></div>
+      <input id="filter-low" type="range" min="0" max="1" step="0.01" value="0" />
+    </div>
+    <div class="slider">
+      <div class="top"><span>Show up to</span><span class="value" id="filter-high-value"></span></div>
+      <input id="filter-high" type="range" min="0" max="1" step="0.01" value="1" />
+    </div>
+
+    <h2>I / J / K range</h2>
+    <div class="slider">
+      <div class="top"><span>I (west-east) up to</span><span class="value" id="i-max-value"></span></div>
+      <input id="i-max" type="range" min="0" max="49" step="1" value="49" />
+    </div>
+    <div class="slider">
+      <div class="top"><span>J (north-south) up to</span><span class="value" id="j-max-value"></span></div>
+      <input id="j-max" type="range" min="0" max="49" step="1" value="49" />
+    </div>
+    <div class="slider">
+      <div class="top"><span>K (layer) from</span><span class="value" id="k-min-value"></span></div>
+      <input id="k-min" type="range" min="0" max="15" step="1" value="0" />
+    </div>
+    <div class="slider">
+      <div class="top"><span>K (layer) to</span><span class="value" id="k-max-value"></span></div>
+      <input id="k-max" type="range" min="0" max="15" step="1" value="15" />
+    </div>
+
+    <h2>View</h2>
+    <div class="slider">
+      <div class="top"><span>Vertical exaggeration</span><span class="value" id="ve-value"></span></div>
+      <input id="ve" type="range" min="1" max="10" step="0.5" value="5" />
+    </div>
+    <label class="toggle"><input id="toggle-edges" type="checkbox" checked /> Cell edges</label>
+    <label class="toggle"><input id="toggle-wells" type="checkbox" checked /> Wells</label>
+    <label class="toggle"><input id="toggle-owc" type="checkbox" /> Oil-water contact (1640 m)</label>
+    <p class="hint legend"><span style="background:#3fb950"></span>producer<span style="background:#58a6ff"></span>injector<span style="background:#e3b341"></span>proposed</p>
+  </div>
+
+  <div id="info" class="panel">
+    <h2 style="margin-top:0">Field</h2>
+    <table>
+      <tr><td>STOIIP (2026)</td><td id="stoiip"></td></tr>
+      <tr><td>Remaining oil in place</td><td id="oil-in-place"></td></tr>
+      <tr><td>Recovery factor</td><td id="recovery"></td></tr>
+    </table>
+    <h2>Selected cell</h2>
+    <div id="cell-info" class="hint">Click a cell to inspect it.</div>
+  </div>
+
+  <div id="stats" class="panel"></div>
+
+  <script id="reservoir-worker-source" type="text/plain">
+    self.onmessage = (event) => {
+      const {
+        NI, NJ, NK, CELL_SIZE_METERS, METERS_PER_UNIT, REFERENCE_DEPTH,
+        FAULT_I, FAULT_THROW, OWC_DEPTH, TIME_STEPS, TEX_WIDTH, WELLS,
+      } = event.data;
+      const startTime = performance.now();
+      const cellCount = NI * NJ * NK;
+      const fieldWidth = NI * CELL_SIZE_METERS;
+      const fieldLength = NJ * CELL_SIZE_METERS;
+      const domeCenterX = fieldWidth * 0.47;
+      const domeCenterY = fieldLength * 0.5;
+
+      const clamp = (value, low, high) => Math.min(Math.max(value, low), high);
+      const smoothstep = (edge0, edge1, value) => {
+        const t = clamp((value - edge0) / (edge1 - edge0), 0, 1);
+        return t * t * (3 - 2 * t);
+      };
+      const hash = (i, j, k) => {
+        const s = Math.sin(i * 12.9898 + j * 78.233 + k * 37.719) * 43758.5453;
+        return s - Math.floor(s);
+      };
+
+      const topDepth = (x, y) => {
+        const nx = (x - domeCenterX) / (fieldWidth * 0.5);
+        const ny = (y - domeCenterY) / (fieldLength * 0.5);
+        return 1520 + 150 * (nx * nx + ny * ny) + 10 * Math.sin(x / 520) * Math.cos(y / 610);
+      };
+      const reservoirThickness = (x, y) => 110 + 20 * Math.sin(x / 900 + 1.3) * Math.cos(y / 1100);
+      const blockOf = (i) => (i >= FAULT_I ? 1 : 0);
+      // Every corner uses the throw of the cell's own column, so the two sides of the fault get different depths.
+      const cornerDepth = (x, y, layerBoundary, i) =>
+        topDepth(x, y) + blockOf(i) * FAULT_THROW + layerBoundary * reservoirThickness(x, y) / NK;
+
+      // ---------- Geometry: 6 quads per cell, 4 own vertices per quad (needed for per-face edges and normals)
+      const vertexCount = cellCount * 24;
+      const positions = new Float32Array(vertexCount * 3);
+      const normals = new Int8Array(vertexCount * 3);
+      const faceUvs = new Uint8Array(vertexCount * 2);
+      const cellIds = new Float32Array(vertexCount);
+      const indices = new Uint32Array(cellCount * 36);
+
+      // corner index = cx + 2 * cy + 4 * cz; cy = 0 is the top (shallower) side of the cell
+      const FACES = [
+        { corners: [0, 4, 6, 2], outward: [-1, 0, 0] },
+        { corners: [1, 3, 7, 5], outward: [1, 0, 0] },
+        { corners: [0, 1, 5, 4], outward: [0, 1, 0] },
+        { corners: [2, 6, 7, 3], outward: [0, -1, 0] },
+        { corners: [0, 2, 3, 1], outward: [0, 0, -1] },
+        { corners: [4, 5, 7, 6], outward: [0, 0, 1] },
+      ];
+      const QUAD_UVS = [0, 0, 255, 0, 255, 255, 0, 255];
+      const corners = new Float32Array(24);
+      let vertexOffset = 0;
+      let indexOffset = 0;
+
+      for (let k = 0; k < NK; k++) {
+        for (let j = 0; j < NJ; j++) {
+          for (let i = 0; i < NI; i++) {
+            const cell = i + j * NI + k * NI * NJ;
+            for (let corner = 0; corner < 8; corner++) {
+              const cx = corner & 1;
+              const cy = (corner >> 1) & 1;
+              const cz = (corner >> 2) & 1;
+              const xMeters = (i + cx) * CELL_SIZE_METERS;
+              const yMeters = (j + cz) * CELL_SIZE_METERS;
+              const depth = cornerDepth(xMeters, yMeters, k + cy, i);
+              corners[corner * 3] = (xMeters - fieldWidth / 2) / METERS_PER_UNIT;
+              corners[corner * 3 + 1] = -(depth - REFERENCE_DEPTH) / METERS_PER_UNIT;
+              corners[corner * 3 + 2] = (yMeters - fieldLength / 2) / METERS_PER_UNIT;
+            }
+
+            for (const face of FACES) {
+              let order = face.corners;
+              const a = order[0] * 3, b = order[1] * 3, c = order[2] * 3;
+              const e1x = corners[b] - corners[a], e1y = corners[b + 1] - corners[a + 1], e1z = corners[b + 2] - corners[a + 2];
+              const e2x = corners[c] - corners[a], e2y = corners[c + 1] - corners[a + 1], e2z = corners[c + 2] - corners[a + 2];
+              let nx = e1y * e2z - e1z * e2y;
+              let ny = e1z * e2x - e1x * e2z;
+              let nz = e1x * e2y - e1y * e2x;
+              if (nx * face.outward[0] + ny * face.outward[1] + nz * face.outward[2] < 0) {
+                order = [order[0], order[3], order[2], order[1]];
+                nx = -nx; ny = -ny; nz = -nz;
+              }
+              const length = Math.hypot(nx, ny, nz) || 1;
+              for (let v = 0; v < 4; v++) {
+                const source = order[v] * 3;
+                const target = vertexOffset + v;
+                positions[target * 3] = corners[source];
+                positions[target * 3 + 1] = corners[source + 1];
+                positions[target * 3 + 2] = corners[source + 2];
+                normals[target * 3] = Math.round((nx / length) * 127);
+                normals[target * 3 + 1] = Math.round((ny / length) * 127);
+                normals[target * 3 + 2] = Math.round((nz / length) * 127);
+                faceUvs[target * 2] = QUAD_UVS[v * 2];
+                faceUvs[target * 2 + 1] = QUAD_UVS[v * 2 + 1];
+                cellIds[target] = cell;
+              }
+              indices[indexOffset] = vertexOffset;
+              indices[indexOffset + 1] = vertexOffset + 1;
+              indices[indexOffset + 2] = vertexOffset + 2;
+              indices[indexOffset + 3] = vertexOffset;
+              indices[indexOffset + 4] = vertexOffset + 2;
+              indices[indexOffset + 5] = vertexOffset + 3;
+              vertexOffset += 4;
+              indexOffset += 6;
+            }
+          }
+        }
+      }
+
+      // ---------- Properties, packed for a texture: value of cell c at time step t is at t * layerSize + c
+      const rowsPerLayer = Math.ceil(cellCount / TEX_WIDTH);
+      const layerSize = rowsPerLayer * TEX_WIDTH;
+      const porosity = new Float32Array(layerSize);
+      const logPermeability = new Float32Array(layerSize);
+      const oilSaturation = new Float32Array(layerSize * TIME_STEPS);
+      const pressure = new Float32Array(layerSize * TIME_STEPS);
+      const cellDepth = new Float32Array(cellCount);
+      const oilInPlaceByStep = new Float64Array(TIME_STEPS);
+
+      const RESIDUAL_OIL = 0.2;
+      const MAX_OIL = 0.85;
+      const TRANSITION_ZONE_METERS = 25;
+      const BARRELS_PER_CUBIC_METER = 6.2898;
+      const OIL_FORMATION_VOLUME_FACTOR = 1.2;
+      const FRONT_JUMP_FRACTION = 0.5;
+      const TAIL_YEARS = 4;
+      const OIL_GRADIENT_BAR_PER_METER = 0.07;
+      const BRINE_GRADIENT_BAR_PER_METER = 0.103;
+      const INITIAL_OVERPRESSURE_BAR = 8;
+      const PRESSURE_AT_OWC = 1.013 + BRINE_GRADIENT_BAR_PER_METER * OWC_DEPTH + INITIAL_OVERPRESSURE_BAR;
+      const distanceToSegment = (px, py, start, end) => {
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const t = clamp(((px - start.x) * dx + (py - start.y) * dy) / (dx * dx + dy * dy), 0, 1);
+        return Math.hypot(px - (start.x + t * dx), py - (start.y + t * dy));
+      };
+      const wellBlock = (well) => blockOf(Math.floor(well.x / CELL_SIZE_METERS));
+      const producers = WELLS.filter((well) => well.type === 'producer');
+      const injectors = WELLS.filter((well) => well.type === 'injector');
+      const blockHasActiveWells = [0, 1].map((block) =>
+        WELLS.some((well) => well.type !== 'proposed' && wellBlock(well) === block));
+      let pressureMin = Infinity;
+      let pressureMax = -Infinity;
+
+      for (let k = 0; k < NK; k++) {
+        for (let j = 0; j < NJ; j++) {
+          for (let i = 0; i < NI; i++) {
+            const cell = i + j * NI + k * NI * NJ;
+            const x = (i + 0.5) * CELL_SIZE_METERS;
+            const y = (j + 0.5) * CELL_SIZE_METERS;
+            const block = blockOf(i);
+            const depth = cornerDepth(x, y, k + 0.5, i);
+            cellDepth[cell] = depth;
+
+            const layerQuality = 0.5 + 0.5 * Math.sin(k * 1.7 + 0.4);
+            const channelAxisX = 1400 + 500 * Math.sin(y / 650);
+            const channel = Math.exp(-(((x - channelAxisX) / 350) ** 2)) * (k % 6 < 3 ? 1 : 0.3);
+            const cellPorosity = clamp(0.07 + 0.09 * layerQuality + 0.11 * channel + 0.03 * (hash(i, j, k) - 0.5), 0.02, 0.32);
+            porosity[cell] = cellPorosity;
+            const cellLogPermeability = clamp(-0.5 + (cellPorosity - 0.04) * 16, -1, 3.5);
+            logPermeability[cell] = cellLogPermeability;
+            const permeabilityMd = 10 ** cellLogPermeability;
+
+            const initialOil = MAX_OIL * clamp((OWC_DEPTH - depth) / TRANSITION_ZONE_METERS, 0, 1);
+            const poreVolume = CELL_SIZE_METERS * CELL_SIZE_METERS * (reservoirThickness(x, y) / NK) * cellPorosity;
+
+            // Water front: faster in good rock and in deep layers (water under-runs the lighter oil), stopped by the sealing fault.
+            const frontSpeedMetersPerYear = 300 * clamp(Math.sqrt(permeabilityMd / 50), 0.5, 3);
+            const gravityFactor = 1.0 - (0.35 * k) / (NK - 1);
+            let waterArrivalYear = Infinity;
+            let distanceToFlowPath = Infinity;
+            for (const injector of injectors) {
+              if (wellBlock(injector) !== block) continue;
+              const distance = Math.hypot(x - injector.x, y - injector.y);
+              waterArrivalYear = Math.min(waterArrivalYear, (distance / frontSpeedMetersPerYear) * gravityFactor);
+              for (const producer of producers) {
+                if (wellBlock(producer) !== block) continue;
+                distanceToFlowPath = Math.min(distanceToFlowPath, distanceToSegment(x, y, injector, producer));
+              }
+            }
+
+            // Sweep efficiency: tight layers and cells away from injector-producer paths give up only part of their movable oil.
+            const verticalSweep = clamp(Math.sqrt(permeabilityMd / 60), 0.45, 1);
+            const arealSweep = Number.isFinite(distanceToFlowPath)
+              ? 0.6 + 0.4 * Math.exp(-((distanceToFlowPath / 900) ** 2))
+              : 0;
+            const sweptOil = Math.max(initialOil - RESIDUAL_OIL, 0) * verticalSweep * arealSweep;
+
+            const initialPressure = depth < OWC_DEPTH
+              ? PRESSURE_AT_OWC - OIL_GRADIENT_BAR_PER_METER * (OWC_DEPTH - depth)
+              : PRESSURE_AT_OWC + BRINE_GRADIENT_BAR_PER_METER * (depth - OWC_DEPTH);
+
+            for (let step = 0; step < TIME_STEPS; step++) {
+              // The front arrives with a saturation jump, then oil keeps draining slowly behind it (Buckley-Leverett tail).
+              const yearsSinceArrival = step - waterArrivalYear;
+              const displacedFraction = smoothstep(-0.5, 0.5, yearsSinceArrival)
+                * (FRONT_JUMP_FRACTION + (1 - FRONT_JUMP_FRACTION) * (1 - Math.exp(-Math.max(yearsSinceArrival, 0) / TAIL_YEARS)));
+              const oil = initialOil - sweptOil * displacedFraction;
+              oilSaturation[step * layerSize + cell] = oil;
+              oilInPlaceByStep[step] += (poreVolume * oil * BARRELS_PER_CUBIC_METER) / OIL_FORMATION_VOLUME_FACTOR;
+
+              // Injection replaces most of the produced volume: block average stays nearly flat,
+              // with a pressure sink around producers and a mound around injectors. The fault seals both ways.
+              const ramp = 1 - Math.exp(-step);
+              let pressureChange = 0;
+              if (blockHasActiveWells[block]) pressureChange -= 4 * (1 - Math.exp(-step / 4));
+              for (const producer of producers) {
+                if (wellBlock(producer) !== block) continue;
+                const distance = Math.hypot(x - producer.x, y - producer.y);
+                pressureChange -= 28 * ramp * Math.exp(-((distance / 650) ** 2));
+              }
+              for (const injector of injectors) {
+                if (wellBlock(injector) !== block) continue;
+                const distance = Math.hypot(x - injector.x, y - injector.y);
+                pressureChange += 24 * ramp * Math.exp(-((distance / 650) ** 2));
+              }
+              const cellPressure = initialPressure + pressureChange;
+              pressure[step * layerSize + cell] = cellPressure;
+              pressureMin = Math.min(pressureMin, cellPressure);
+              pressureMax = Math.max(pressureMax, cellPressure);
+            }
+          }
+        }
+      }
+
+      self.postMessage({
+        positions, normals, faceUvs, cellIds, indices,
+        rowsPerLayer, layerSize, cellDepth, oilInPlaceByStep,
+        properties: {
+          oilSaturation: { data: oilSaturation, layers: TIME_STEPS, min: 0, max: MAX_OIL },
+          pressure: { data: pressure, layers: TIME_STEPS, min: Math.floor(pressureMin), max: Math.ceil(pressureMax) },
+          porosity: { data: porosity, layers: 1, min: 0, max: 0.32 },
+          logPermeability: { data: logPermeability, layers: 1, min: -1, max: 3.5 },
+        },
+        buildMs: performance.now() - startTime,
+      }, [
+        positions.buffer, normals.buffer, faceUvs.buffer, cellIds.buffer, indices.buffer,
+        cellDepth.buffer, oilInPlaceByStep.buffer,
+        oilSaturation.buffer, pressure.buffer, porosity.buffer, logPermeability.buffer,
+      ]);
+    };
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+    const NI = 50;
+    const NJ = 50;
+    const NK = 16;
+    const CELL_SIZE_METERS = 80;
+    const METERS_PER_UNIT = 50;
+    const REFERENCE_DEPTH = 1700;
+    const FAULT_I = 28;
+    const FAULT_THROW = 30;
+    const OWC_DEPTH = 1640;
+    const TIME_STEPS = 13;
+    const FIRST_YEAR = 2026;
+    const TEX_WIDTH = 256;
+    const PICK_LAYER = 2;
+    const PLAY_SPEED_YEARS_PER_SECOND = 1.5;
+    const CLICK_MAX_MOVE_PIXELS = 4;
+
+    // x / y in meters from the north-west corner of the grid (y grows to the south)
+    const WELLS = [
+      { name: 'P1', type: 'producer', x: 1650, y: 1550 },
+      { name: 'P2', type: 'producer', x: 1800, y: 2500 },
+      { name: 'I1', type: 'injector', x: 350, y: 600 },
+      { name: 'I2', type: 'injector', x: 350, y: 3400 },
+      { name: 'I3', type: 'injector', x: 1700, y: 3900 },
+      { name: 'PX (proposed)', type: 'proposed', x: 2700, y: 2000 },
+    ];
+    const WELL_COLORS = { producer: 0x3fb950, injector: 0x58a6ff, proposed: 0xe3b341 };
+
+    let renderRequested = false;
+    let isReady = false;
+    let isPlaying = false;
+
+    // ---------- 1. Build geometry + properties off the main thread
+    const workerSource = document.getElementById('reservoir-worker-source').textContent;
+    const workerUrl = URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' }));
+    const worker = new Worker(workerUrl);
+    const workerStartTime = performance.now();
+    const reservoir = await new Promise((resolve, reject) => {
+      worker.onmessage = (event) => resolve(event.data);
+      worker.onerror = reject;
+      worker.postMessage({
+        NI, NJ, NK, CELL_SIZE_METERS, METERS_PER_UNIT, REFERENCE_DEPTH,
+        FAULT_I, FAULT_THROW, OWC_DEPTH, TIME_STEPS, TEX_WIDTH, WELLS,
+      });
+    });
+    const workerRoundTripMs = performance.now() - workerStartTime;
+    worker.terminate();
+    URL.revokeObjectURL(workerUrl);
+    document.getElementById('loading').remove();
+
+    // ---------- 2. Renderer, camera, controls
+    const viewport = document.getElementById('viewport');
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x0d1117, 1);
+    viewport.appendChild(renderer.domElement);
+
+    const labelRenderer = new CSS2DRenderer();
+    labelRenderer.setSize(window.innerWidth, window.innerHeight);
+    labelRenderer.domElement.style.position = 'fixed';
+    labelRenderer.domElement.style.inset = '0';
+    labelRenderer.domElement.style.pointerEvents = 'none';
+    viewport.appendChild(labelRenderer.domElement);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.5, 1000);
+    camera.position.set(72, 48, 92);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, -4, 0);
+    controls.enableDamping = true;
+    controls.minDistance = 20;
+    controls.maxDistance = 300;
+    controls.maxPolarAngle = Math.PI * 0.95;
+    controls.zoomToCursor = true;
+    controls.update();
+    controls.addEventListener('change', requestRender);
+
+    const subsurfaceGroup = new THREE.Group();
+    scene.add(subsurfaceGroup);
+
+    // ---------- 3. Property textures: every time step of a property sits in one float texture
+    const propertyTextures = {};
+    for (const [key, property] of Object.entries(reservoir.properties)) {
+      const texture = new THREE.DataTexture(
+        property.data, TEX_WIDTH, reservoir.rowsPerLayer * property.layers,
+        THREE.RedFormat, THREE.FloatType,
+      );
+      texture.minFilter = THREE.NearestFilter;
+      texture.magFilter = THREE.NearestFilter;
+      texture.generateMipmaps = false;
+      texture.needsUpdate = true;
+      propertyTextures[key] = texture;
+    }
+
+    const PROPERTY_DISPLAY = {
+      oilSaturation: { format: (value) => value.toFixed(2) },
+      pressure: { format: (value) => `${value.toFixed(0)} bar` },
+      porosity: { format: (value) => `${(value * 100).toFixed(1)} %` },
+      logPermeability: { format: (value) => formatPermeability(10 ** value) },
+    };
+
+    function formatPermeability(millidarcy) {
+      return millidarcy >= 10 ? `${millidarcy.toFixed(0)} mD` : `${millidarcy.toFixed(2)} mD`;
+    }
+
+    // ---------- 4. Grid shader: property lookup, GPU filtering, edges, picking
+    const gridVertexShader = /* glsl */ `
+      uniform highp sampler2D uProperty;
+      uniform float uRowsPerLayer;
+      uniform float uLayerCount;
+      uniform float uTime;
+      uniform vec2 uRange;
+      uniform vec2 uFilter;
+      uniform vec3 uIjkMin;
+      uniform vec3 uIjkMax;
+
+      in float cellIndex;
+      in vec2 faceUv;
+
+      flat out float vCell;
+      out vec2 vFaceUv;
+      out float vNormalizedValue;
+      out vec3 vViewNormal;
+
+      float fetchCellValue(int cell, int layer) {
+        ivec2 texel = ivec2(cell % TEX_WIDTH, layer * int(uRowsPerLayer) + cell / TEX_WIDTH);
+        return texelFetch(uProperty, texel, 0).r;
+      }
+
+      void main() {
+        int cell = int(cellIndex + 0.5);
+        vec3 ijk = vec3(float(cell % NI), float((cell / NI) % NJ), float(cell / (NI * NJ)));
+
+        float lastLayer = uLayerCount - 1.0;
+        float time = clamp(uTime, 0.0, lastLayer);
+        int layerA = int(floor(time));
+        int layerB = min(layerA + 1, int(lastLayer));
+        float value = mix(fetchCellValue(cell, layerA), fetchCellValue(cell, layerB), time - float(layerA));
+        float normalizedValue = clamp((value - uRange.x) / (uRange.y - uRange.x), 0.0, 1.0);
+
+        bool outsideIjk = any(lessThan(ijk, uIjkMin)) || any(greaterThan(ijk, uIjkMax));
+        bool outsideFilter = normalizedValue < uFilter.x || normalizedValue > uFilter.y;
+        if (outsideIjk || outsideFilter) {
+          // All vertices of a hidden cell land outside the clip volume, so the GPU drops its triangles.
+          gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+          return;
+        }
+
+        vCell = float(cell);
+        vFaceUv = faceUv;
+        vNormalizedValue = normalizedValue;
+        vViewNormal = normalize(normalMatrix * normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `;
+
+    const gridFragmentShader = /* glsl */ `
+      uniform float uPickedCell;
+      uniform float uEdgeStrength;
+
+      flat in float vCell;
+      in vec2 vFaceUv;
+      in float vNormalizedValue;
+      in vec3 vViewNormal;
+
+      out vec4 fragColor;
+
+      // Turbo colormap, polynomial fit by Google (Apache-2.0)
+      vec3 turbo(float x) {
+        const vec4 redVec4 = vec4(0.13572138, 4.61539260, -42.66032258, 132.13108234);
+        const vec4 greenVec4 = vec4(0.09140261, 2.19418839, 4.84296658, -14.18503333);
+        const vec4 blueVec4 = vec4(0.10667330, 12.64194608, -60.58204836, 110.36276771);
+        const vec2 redVec2 = vec2(-152.94239396, 59.28637943);
+        const vec2 greenVec2 = vec2(4.27729857, 2.82956604);
+        const vec2 blueVec2 = vec2(-89.90310912, 27.34824973);
+        x = clamp(x, 0.0, 1.0);
+        vec4 v4 = vec4(1.0, x, x * x, x * x * x);
+        vec2 v2 = v4.zw * v4.z;
+        return vec3(
+          dot(v4, redVec4) + dot(v2, redVec2),
+          dot(v4, greenVec4) + dot(v2, greenVec2),
+          dot(v4, blueVec4) + dot(v2, blueVec2)
+        );
+      }
+
+      void main() {
+      #ifdef PICKING
+        float id = vCell + 1.0;
+        fragColor = vec4(mod(id, 256.0), mod(floor(id / 256.0), 256.0), floor(id / 65536.0), 255.0) / 255.0;
+      #else
+        vec3 normal = normalize(vViewNormal);
+        float diffuse = 0.45 + 0.55 * max(dot(normal, normalize(vec3(0.35, 0.6, 0.7))), 0.0);
+        vec3 color = turbo(vNormalizedValue) * diffuse;
+
+        // Edge lines from the per-face 0..1 coordinates, faded out when cells get too small on screen.
+        vec2 uvPerPixel = max(fwidth(vFaceUv), vec2(1e-4));
+        vec2 distanceInPixels = min(vFaceUv, 1.0 - vFaceUv) / uvPerPixel;
+        float edge = 1.0 - smoothstep(0.5, 1.5, min(distanceInPixels.x, distanceInPixels.y));
+        edge *= smoothstep(4.0, 12.0, 1.0 / max(uvPerPixel.x, uvPerPixel.y));
+        color = mix(color, color * 0.4, edge * uEdgeStrength);
+
+        if (abs(vCell - uPickedCell) < 0.5) {
+          color = mix(color, vec3(1.0), 0.45 + 0.55 * edge);
+        }
+        fragColor = vec4(color, 1.0);
+      #endif
+      }
+    `;
+
+    const gridUniforms = {
+      uProperty: { value: propertyTextures.oilSaturation },
+      uRowsPerLayer: { value: reservoir.rowsPerLayer },
+      uLayerCount: { value: 1 },
+      uTime: { value: 0 },
+      uRange: { value: new THREE.Vector2(0, 1) },
+      uFilter: { value: new THREE.Vector2(0, 1) },
+      uIjkMin: { value: new THREE.Vector3(0, 0, 0) },
+      uIjkMax: { value: new THREE.Vector3(NI - 1, NJ - 1, NK - 1) },
+      uPickedCell: { value: -1 },
+      uEdgeStrength: { value: 1 },
+    };
+    const gridDefines = { NI, NJ, TEX_WIDTH };
+
+    // Both materials share one uniforms object, so the picking pass always filters exactly like the visible pass.
+    const gridMaterial = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: gridUniforms,
+      defines: { ...gridDefines },
+      vertexShader: gridVertexShader,
+      fragmentShader: gridFragmentShader,
+    });
+    const pickMaterial = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: gridUniforms,
+      defines: { ...gridDefines, PICKING: 1 },
+      vertexShader: gridVertexShader,
+      fragmentShader: gridFragmentShader,
+    });
+
+    const gridGeometry = new THREE.BufferGeometry();
+    gridGeometry.setAttribute('position', new THREE.BufferAttribute(reservoir.positions, 3));
+    gridGeometry.setAttribute('normal', new THREE.BufferAttribute(reservoir.normals, 3, true));
+    gridGeometry.setAttribute('faceUv', new THREE.BufferAttribute(reservoir.faceUvs, 2, true));
+    gridGeometry.setAttribute('cellIndex', new THREE.BufferAttribute(reservoir.cellIds, 1));
+    gridGeometry.setIndex(new THREE.BufferAttribute(reservoir.indices, 1));
+    gridGeometry.computeBoundingSphere();
+
+    const gridMesh = new THREE.Mesh(gridGeometry, gridMaterial);
+    gridMesh.layers.enable(PICK_LAYER);
+    gridMesh.matrixAutoUpdate = false;
+    subsurfaceGroup.add(gridMesh);
+
+    // ---------- 5. Wells and the oil-water contact
+    const metersToSceneX = (x) => (x - (NI * CELL_SIZE_METERS) / 2) / METERS_PER_UNIT;
+    const metersToSceneZ = (y) => (y - (NJ * CELL_SIZE_METERS) / 2) / METERS_PER_UNIT;
+    const depthToSceneY = (depth) => -(depth - REFERENCE_DEPTH) / METERS_PER_UNIT;
+
+    const wellsGroup = new THREE.Group();
+    subsurfaceGroup.add(wellsGroup);
+    const wellLabels = [];
+    const WELL_TOP_DEPTH = 1380;
+    const WELL_BOTTOM_DEPTH = 1960;
+    const wellTopY = depthToSceneY(WELL_TOP_DEPTH);
+    const wellBottomY = depthToSceneY(WELL_BOTTOM_DEPTH);
+
+    for (const well of WELLS) {
+      const x = metersToSceneX(well.x);
+      const z = metersToSceneZ(well.y);
+      let wellObject;
+      if (well.type === 'proposed') {
+        const lineGeometry = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(x, wellTopY, z), new THREE.Vector3(x, wellBottomY, z),
+        ]);
+        wellObject = new THREE.Line(lineGeometry, new THREE.LineDashedMaterial({
+          color: WELL_COLORS.proposed, dashSize: 0.4, gapSize: 0.25, depthTest: false, transparent: true,
+        }));
+        wellObject.computeLineDistances();
+        wellObject.renderOrder = 2;
+      } else {
+        const tubeGeometry = new THREE.CylinderGeometry(0.3, 0.3, wellTopY - wellBottomY, 12);
+        wellObject = new THREE.Mesh(tubeGeometry, new THREE.MeshBasicMaterial({ color: WELL_COLORS[well.type] }));
+        wellObject.position.set(x, (wellTopY + wellBottomY) / 2, z);
+        wellObject.updateMatrix();
+        wellObject.matrixAutoUpdate = false;
+      }
+      wellsGroup.add(wellObject);
+
+      const labelElement = document.createElement('div');
+      labelElement.className = `well-label ${well.type}`;
+      labelElement.textContent = well.name;
+      const label = new CSS2DObject(labelElement);
+      label.position.set(x, wellTopY, z);
+      wellsGroup.add(label);
+      wellLabels.push(label);
+    }
+
+    const contactPlane = new THREE.Mesh(
+      new THREE.PlaneGeometry((NI * CELL_SIZE_METERS) / METERS_PER_UNIT + 8, (NJ * CELL_SIZE_METERS) / METERS_PER_UNIT + 8),
+      new THREE.MeshBasicMaterial({ color: 0x39c5cf, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false }),
+    );
+    contactPlane.rotation.x = -Math.PI / 2;
+    contactPlane.position.y = depthToSceneY(OWC_DEPTH);
+    contactPlane.visible = false;
+    subsurfaceGroup.add(contactPlane);
+
+    // ---------- 6. GPU picking: render cell ids into a 1x1 target under the cursor
+    const pickTarget = new THREE.WebGLRenderTarget(1, 1);
+    const pickPixel = new Uint8Array(4);
+    const clearColor = new THREE.Color();
+
+    async function pickCellAt(clientX, clientY) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const previousClearAlpha = renderer.getClearAlpha();
+      renderer.getClearColor(clearColor);
+
+      camera.setViewOffset(rect.width, rect.height, clientX - rect.left, clientY - rect.top, 1, 1);
+      camera.layers.set(PICK_LAYER);
+      scene.overrideMaterial = pickMaterial;
+      renderer.setRenderTarget(pickTarget);
+      renderer.setClearColor(0x000000, 0);
+      renderer.clear();
+      renderer.render(scene, camera);
+
+      renderer.setRenderTarget(null);
+      renderer.setClearColor(clearColor, previousClearAlpha);
+      scene.overrideMaterial = null;
+      camera.layers.set(0);
+      camera.clearViewOffset();
+
+      // Async readback avoids stalling the main thread while the GPU finishes.
+      if (renderer.readRenderTargetPixelsAsync) {
+        await renderer.readRenderTargetPixelsAsync(pickTarget, 0, 0, 1, 1, pickPixel);
+      } else {
+        renderer.readRenderTargetPixels(pickTarget, 0, 0, 1, 1, pickPixel);
+      }
+      return pickPixel[0] + pickPixel[1] * 256 + pickPixel[2] * 65536 - 1;
+    }
+
+    let pointerDownPosition = null;
+    let latestPickRequest = 0;
+    renderer.domElement.addEventListener('pointerdown', (event) => {
+      // A second finger means pinch or rotate, never a pick.
+      pointerDownPosition = event.isPrimary ? { x: event.clientX, y: event.clientY, pointerId: event.pointerId } : null;
+    });
+    renderer.domElement.addEventListener('pointercancel', () => {
+      pointerDownPosition = null;
+    });
+    renderer.domElement.addEventListener('pointerup', async (event) => {
+      if (!pointerDownPosition || event.pointerId !== pointerDownPosition.pointerId) return;
+      const moved = Math.hypot(event.clientX - pointerDownPosition.x, event.clientY - pointerDownPosition.y);
+      pointerDownPosition = null;
+      if (moved > CLICK_MAX_MOVE_PIXELS) return;
+      const pickRequest = ++latestPickRequest;
+      const pickStart = performance.now();
+      const pickedCell = await pickCellAt(event.clientX, event.clientY);
+      if (pickRequest !== latestPickRequest) return;
+      gridUniforms.uPickedCell.value = pickedCell;
+      lastPickMs = performance.now() - pickStart;
+      updateInfo();
+      requestRender();
+    });
+
+    // ---------- 7. UI
+    let currentPropertyKey = 'oilSaturation';
+    const propertySelect = document.getElementById('property');
+    const timeInput = document.getElementById('time');
+    const playButton = document.getElementById('play');
+    const filterLowInput = document.getElementById('filter-low');
+    const filterHighInput = document.getElementById('filter-high');
+    timeInput.max = String(TIME_STEPS - 1);
+
+    function propertyValueAt(key, cell, time) {
+      const property = reservoir.properties[key];
+      const lastLayer = property.layers - 1;
+      const clampedTime = Math.min(Math.max(time, 0), lastLayer);
+      const layerA = Math.floor(clampedTime);
+      const layerB = Math.min(layerA + 1, lastLayer);
+      const blend = clampedTime - layerA;
+      const valueA = property.data[layerA * reservoir.layerSize + cell];
+      const valueB = property.data[layerB * reservoir.layerSize + cell];
+      return valueA + (valueB - valueA) * blend;
+    }
+
+    function rangeValue(normalized) {
+      const property = reservoir.properties[currentPropertyKey];
+      return property.min + normalized * (property.max - property.min);
+    }
+
+    function setProperty(key) {
+      currentPropertyKey = key;
+      const property = reservoir.properties[key];
+      gridUniforms.uProperty.value = propertyTextures[key];
+      gridUniforms.uLayerCount.value = property.layers;
+      gridUniforms.uRange.value.set(property.min, property.max);
+      drawColorbar();
+      updateFilterLabels();
+      updateTimeLabel();
+      requestRender();
+    }
+
+    function drawColorbar() {
+      const canvas = document.querySelector('#colorbar canvas');
+      const context = canvas.getContext('2d');
+      const image = context.createImageData(canvas.width, 1);
+      for (let x = 0; x < canvas.width; x++) {
+        const [r, g, b] = turboColor(x / (canvas.width - 1));
+        image.data.set([r * 255, g * 255, b * 255, 255], x * 4);
+      }
+      context.putImageData(image, 0, 0);
+      const format = PROPERTY_DISPLAY[currentPropertyKey].format;
+      document.getElementById('colorbar-min').textContent = format(rangeValue(0));
+      document.getElementById('colorbar-mid').textContent = format(rangeValue(0.5));
+      document.getElementById('colorbar-max').textContent = format(rangeValue(1));
+    }
+
+    function turboColor(x) {
+      const t = Math.min(Math.max(x, 0), 1);
+      const v4 = [1, t, t * t, t * t * t];
+      const v2 = [v4[2] * v4[2], v4[3] * v4[2]];
+      const channel = (c4, c2) => c4[0] * v4[0] + c4[1] * v4[1] + c4[2] * v4[2] + c4[3] * v4[3] + c2[0] * v2[0] + c2[1] * v2[1];
+      return [
+        channel([0.13572138, 4.6153926, -42.66032258, 132.13108234], [-152.94239396, 59.28637943]),
+        channel([0.09140261, 2.19418839, 4.84296658, -14.18503333], [4.27729857, 2.82956604]),
+        channel([0.1066733, 12.64194608, -60.58204836, 110.36276771], [-89.90310912, 27.34824973]),
+      ].map((value) => Math.min(Math.max(value, 0), 1));
+    }
+
+    function updateFilterLabels() {
+      const format = PROPERTY_DISPLAY[currentPropertyKey].format;
+      const [low, high] = [gridUniforms.uFilter.value.x, gridUniforms.uFilter.value.y];
+      document.getElementById('filter-low-value').textContent = format(rangeValue(low));
+      document.getElementById('filter-high-value').textContent = format(rangeValue(high));
+    }
+
+    function updateTimeLabel() {
+      const isStatic = reservoir.properties[currentPropertyKey].layers === 1;
+      const year = (FIRST_YEAR + gridUniforms.uTime.value).toFixed(1);
+      document.getElementById('time-value').textContent = isStatic ? `${year} (static property)` : year;
+    }
+
+    function setTime(time) {
+      gridUniforms.uTime.value = time;
+      timeInput.value = String(time);
+      updateTimeLabel();
+      updateInfo();
+      requestRender();
+    }
+
+    function bindSlider(id, onInput) {
+      const input = document.getElementById(id);
+      const handler = () => {
+        onInput(Number(input.value), input);
+        requestRender();
+      };
+      input.addEventListener('input', handler);
+      handler();
+      return input;
+    }
+
+    propertySelect.addEventListener('change', () => setProperty(propertySelect.value));
+    timeInput.addEventListener('input', () => setTime(Number(timeInput.value)));
+
+    function applyFilter() {
+      let low = Number(filterLowInput.value);
+      let high = Number(filterHighInput.value);
+      if (low > high) [low, high] = [high, low];
+      gridUniforms.uFilter.value.set(low, high);
+      updateFilterLabels();
+      requestRender();
+    }
+    filterLowInput.addEventListener('input', applyFilter);
+    filterHighInput.addEventListener('input', applyFilter);
+
+    bindSlider('i-max', (value) => {
+      gridUniforms.uIjkMax.value.x = value;
+      document.getElementById('i-max-value').textContent = `${value + 1} / ${NI}`;
+    });
+    bindSlider('j-max', (value) => {
+      gridUniforms.uIjkMax.value.y = value;
+      document.getElementById('j-max-value').textContent = `${value + 1} / ${NJ}`;
+    });
+    bindSlider('k-min', (value) => {
+      gridUniforms.uIjkMin.value.z = value;
+      document.getElementById('k-min-value').textContent = `${value + 1}`;
+    });
+    bindSlider('k-max', (value) => {
+      gridUniforms.uIjkMax.value.z = value;
+      document.getElementById('k-max-value').textContent = `${value + 1}`;
+    });
+    bindSlider('ve', (value) => {
+      subsurfaceGroup.scale.y = value;
+      document.getElementById('ve-value').textContent = `${value}x`;
+    });
+
+    document.getElementById('toggle-edges').addEventListener('change', (event) => {
+      gridUniforms.uEdgeStrength.value = event.target.checked ? 1 : 0;
+      requestRender();
+    });
+    document.getElementById('toggle-wells').addEventListener('change', (event) => {
+      wellsGroup.visible = event.target.checked;
+      for (const label of wellLabels) label.visible = event.target.checked;
+      requestRender();
+    });
+    document.getElementById('toggle-owc').addEventListener('change', (event) => {
+      contactPlane.visible = event.target.checked;
+      requestRender();
+    });
+
+    playButton.addEventListener('click', () => {
+      if (!isPlaying && gridUniforms.uTime.value >= TIME_STEPS - 1) setTime(0);
+      if (reservoir.properties[currentPropertyKey].layers === 1) {
+        propertySelect.value = 'oilSaturation';
+        setProperty('oilSaturation');
+      }
+      setPlaying(!isPlaying);
+    });
+
+    function setPlaying(playing) {
+      isPlaying = playing;
+      playButton.textContent = playing ? 'Pause' : 'Play waterflood';
+      lastTickTime = performance.now();
+      requestRender();
+    }
+
+    function setInputValue(id, value) {
+      const input = document.getElementById(id);
+      input.value = String(value);
+      input.dispatchEvent(new Event('input'));
+    }
+
+    const PRESETS = {
+      initial: { property: 'oilSaturation', time: 0, filter: [0.06, 1], iMax: NI - 1, jMax: NJ - 1 },
+      remaining: { property: 'oilSaturation', time: TIME_STEPS - 1, filter: [0.7, 1], iMax: NI - 1, jMax: NJ - 1 },
+      pressure: { property: 'pressure', time: TIME_STEPS - 1, filter: [0, 1], iMax: NI - 1, jMax: 24 },
+    };
+
+    function applyPreset(name) {
+      const preset = PRESETS[name];
+      setPlaying(false);
+      propertySelect.value = preset.property;
+      setProperty(preset.property);
+      filterLowInput.value = String(preset.filter[0]);
+      filterHighInput.value = String(preset.filter[1]);
+      applyFilter();
+      setInputValue('i-max', preset.iMax);
+      setInputValue('j-max', preset.jMax);
+      setInputValue('k-min', 0);
+      setInputValue('k-max', NK - 1);
+      setTime(preset.time);
+    }
+
+    for (const button of document.querySelectorAll('[data-preset]')) {
+      button.addEventListener('click', () => applyPreset(button.dataset.preset));
+    }
+
+    // ---------- 8. Info panel
+    function interpolateOilInPlace(time) {
+      const clampedTime = Math.min(Math.max(time, 0), TIME_STEPS - 1);
+      const stepA = Math.floor(clampedTime);
+      const stepB = Math.min(stepA + 1, TIME_STEPS - 1);
+      const blend = clampedTime - stepA;
+      return reservoir.oilInPlaceByStep[stepA] * (1 - blend) + reservoir.oilInPlaceByStep[stepB] * blend;
+    }
+
+    function updateInfo() {
+      const time = gridUniforms.uTime.value;
+      const initialOilInPlace = reservoir.oilInPlaceByStep[0];
+      const currentOilInPlace = interpolateOilInPlace(time);
+      document.getElementById('stoiip').textContent = `${(initialOilInPlace / 1e6).toFixed(1)} MMstb`;
+      document.getElementById('oil-in-place').textContent = `${(currentOilInPlace / 1e6).toFixed(1)} MMstb`;
+      document.getElementById('recovery').textContent = `${((1 - currentOilInPlace / initialOilInPlace) * 100).toFixed(1)} %`;
+
+      const cell = gridUniforms.uPickedCell.value;
+      const cellInfo = document.getElementById('cell-info');
+      if (cell < 0) {
+        cellInfo.className = 'hint';
+        cellInfo.textContent = 'Click a cell to inspect it.';
+        return;
+      }
+      const i = cell % NI;
+      const j = Math.floor(cell / NI) % NJ;
+      const k = Math.floor(cell / (NI * NJ));
+      const rows = [
+        ['I, J, K', `${i + 1}, ${j + 1}, ${k + 1}`],
+        ['Fault block', i >= FAULT_I ? 'East' : 'West'],
+        ['Depth (TVDSS)', `${reservoir.cellDepth[cell].toFixed(0)} m`],
+        ['Porosity', PROPERTY_DISPLAY.porosity.format(propertyValueAt('porosity', cell, 0))],
+        ['Permeability', PROPERTY_DISPLAY.logPermeability.format(propertyValueAt('logPermeability', cell, 0))],
+        [`So ${(FIRST_YEAR + time).toFixed(1)}`, PROPERTY_DISPLAY.oilSaturation.format(propertyValueAt('oilSaturation', cell, time))],
+        [`Pressure ${(FIRST_YEAR + time).toFixed(1)}`, PROPERTY_DISPLAY.pressure.format(propertyValueAt('pressure', cell, time))],
+      ];
+      cellInfo.className = '';
+      cellInfo.innerHTML = `<table>${rows.map(([name, value]) => `<tr><td>${name}</td><td>${value}</td></tr>`).join('')}</table>`;
+    }
+
+    // ---------- 9. Render on demand + playback loop
+    const statsElement = document.getElementById('stats');
+    let lastTickTime = performance.now();
+    let lastPickMs = 0;
+    const gpuMegabytes = (() => {
+      let bytes = gridGeometry.index.array.byteLength;
+      for (const attribute of Object.values(gridGeometry.attributes)) bytes += attribute.array.byteLength;
+      for (const property of Object.values(reservoir.properties)) bytes += property.data.byteLength;
+      return bytes / (1024 * 1024);
+    })();
+
+    function requestRender() {
+      if (renderRequested || !isReady) return;
+      renderRequested = true;
+      requestAnimationFrame(tick);
+    }
+
+    function tick() {
+      renderRequested = false;
+      const frameStart = performance.now();
+      const now = frameStart;
+      const isDamping = controls.update();
+
+      if (isPlaying) {
+        const elapsedSeconds = Math.min(Math.max(now - lastTickTime, 0) / 1000, 0.1);
+        const nextTime = gridUniforms.uTime.value + elapsedSeconds * PLAY_SPEED_YEARS_PER_SECOND;
+        if (nextTime >= TIME_STEPS - 1) {
+          setTime(TIME_STEPS - 1);
+          setPlaying(false);
+        } else {
+          setTime(nextTime);
+        }
+      }
+      lastTickTime = now;
+
+      renderer.render(scene, camera);
+      labelRenderer.render(scene, camera);
+
+      const info = renderer.info;
+      statsElement.textContent = [
+        `cells          ${(NI * NJ * NK).toLocaleString()}`,
+        `triangles sent ${info.render.triangles.toLocaleString()}`,
+        `draw calls     ${info.render.calls}`,
+        `GPU data       ${gpuMegabytes.toFixed(1)} MB`,
+        `worker build   ${reservoir.buildMs.toFixed(0)} ms (${workerRoundTripMs.toFixed(0)} ms total)`,
+        `last pick      ${lastPickMs.toFixed(1)} ms`,
+        `frame cpu      ${(performance.now() - frameStart).toFixed(2)} ms`,
+      ].join('\n');
+
+      if (isDamping || isPlaying) requestRender();
+    }
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      labelRenderer.setSize(window.innerWidth, window.innerHeight);
+      requestRender();
+    });
+
+    window.addEventListener('pagehide', (event) => {
+      if (event.persisted) return;
+      gridGeometry.dispose();
+      gridMaterial.dispose();
+      pickMaterial.dispose();
+      for (const texture of Object.values(propertyTextures)) texture.dispose();
+      wellsGroup.traverse((object) => {
+        if (object.geometry) object.geometry.dispose();
+        if (object.material) object.material.dispose();
+      });
+      contactPlane.geometry.dispose();
+      contactPlane.material.dispose();
+      pickTarget.dispose();
+      renderer.dispose();
+    });
+
+    // ---------- 10. Start: no frame is drawn until isReady. compileAsync builds the visible grid program
+    // without blocking; the throw-away pick builds the picking program, so the first real click does not stall.
+    await renderer.compileAsync(scene, camera);
+    await pickCellAt(window.innerWidth / 2, window.innerHeight / 2);
+    gridUniforms.uPickedCell.value = -1;
+    setProperty('oilSaturation');
+    applyPreset('initial');
+    isReady = true;
+    requestRender();
+  </script>
+</body>
+</html>
